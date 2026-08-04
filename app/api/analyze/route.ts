@@ -1,0 +1,87 @@
+/**
+ * Step 2: send an already-downloaded clip to Gemini.
+ *
+ * Streams NDJSON progress events so the UI can show what's happening during
+ * the 30-90s the model takes, instead of a spinner that looks frozen.
+ */
+
+import { NextRequest, NextResponse } from "next/server";
+
+import type { StreamEvent } from "@/lib/analysis";
+import { GeminiError, analyzeVideo } from "@/lib/gemini";
+import { clipPath, getMeta } from "@/lib/store";
+
+export const runtime = "nodejs";
+export const maxDuration = 300;
+
+export async function POST(req: NextRequest) {
+  const body = await req.json().catch(() => ({}));
+  const id = String(body?.id ?? "");
+
+  let meta;
+  try {
+    meta = getMeta(id);
+  } catch {
+    meta = null;
+  }
+
+  if (!meta) {
+    return NextResponse.json(
+      {
+        error: "That clip has expired or was never downloaded.",
+        hint: "Fetch the video again.",
+      },
+      { status: 404 }
+    );
+  }
+
+  const encoder = new TextEncoder();
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      const send = (event: StreamEvent) => {
+        controller.enqueue(encoder.encode(JSON.stringify(event) + "\n"));
+      };
+
+      try {
+        send({ stage: "uploading", message: "Uploading video to Gemini", pct: 20 });
+
+        const result = await analyzeVideo(
+          clipPath(meta),
+          meta.mimeType,
+          (message) => {
+            const pct = message.includes("processing")
+              ? 45
+              : message.includes("Watching")
+                ? 65
+                : 30;
+            send({ stage: "analyzing", message, pct });
+          }
+        );
+
+        send({ stage: "done", result, source: meta.source });
+      } catch (err: unknown) {
+        if (err instanceof GeminiError) {
+          send({ stage: "error", error: err.message, hint: err.hint });
+        } else {
+          console.error("[analyze]", err);
+          send({
+            stage: "error",
+            error: "Analysis failed.",
+            hint: err instanceof Error ? err.message.slice(0, 300) : undefined,
+          });
+        }
+      } finally {
+        controller.close();
+      }
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "application/x-ndjson; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      "X-Accel-Buffering": "no",
+    },
+  });
+}

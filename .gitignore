@@ -39,3 +39,11 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# keep the template, ignore real secrets
+!.env.example
+
+# yt-dlp auth + scratch
+cookies.txt
+_to_delete/
+build*.log
