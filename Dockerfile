@@ -42,12 +42,13 @@ RUN apt-get update \
  && apt-get autoremove -y \
  && rm -rf /var/lib/apt/lists/*
 
-# Hugging Face Spaces requires uid 1000. Harmless everywhere else.
-RUN useradd -m -u 1000 user
-USER user
+# The official Node image already provides the non-root `node` user (uid 1000),
+# which also satisfies Hugging Face Spaces' uid requirement. Reusing it avoids
+# trying to create a duplicate uid during builds on Railway.
+USER node
 
-ENV HOME=/home/user
-WORKDIR /home/user/app
+ENV HOME=/home/node
+WORKDIR /home/node/app
 
 # HOSTNAME must be pinned: Docker sets it to the container id, and Next's
 # standalone server would bind to that name instead of all interfaces — the
@@ -56,20 +57,20 @@ WORKDIR /home/user/app
 # PORT is only a fallback. Koyeb, Render and Cloud Run inject their own PORT at
 # runtime, which overrides this. 7860 is what Spaces expects.
 #
-# TMPDIR moves downloaded clips under a directory `user` owns. Node's
+# TMPDIR moves downloaded clips under a directory `node` owns. Node's
 # os.tmpdir() reads TMPDIR, so no code change is needed.
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
     HOSTNAME=0.0.0.0 \
     PORT=7860 \
-    TMPDIR=/home/user/app/tmp \
+    TMPDIR=/home/node/app/tmp \
     YTDLP_PATH=/usr/local/bin/yt-dlp
 
-RUN mkdir -p /home/user/app/tmp
+RUN mkdir -p /home/node/app/tmp
 
-COPY --from=builder --chown=user:user /app/.next/standalone ./
-COPY --from=builder --chown=user:user /app/.next/static ./.next/static
-COPY --from=builder --chown=user:user /app/public ./public
+COPY --from=builder --chown=node:node /app/.next/standalone ./
+COPY --from=builder --chown=node:node /app/.next/static ./.next/static
+COPY --from=builder --chown=node:node /app/public ./public
 
 EXPOSE 7860
 
