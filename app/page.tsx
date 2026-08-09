@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 
 import SiteHeader from '@/app/components/SiteHeader';
 import type {
@@ -90,7 +90,20 @@ export default function Home() {
     message?: string;
   }>({ state: 'idle' });
 
+  // Whether the server has an N8N_WEBHOOK_URL. Without one the button would
+  // only ever produce a "not configured" error, so it isn't shown at all.
+  const [notionEnabled, setNotionEnabled] = useState(false);
+
   const videoRef = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    // /api/health already reports this, so there's no second endpoint to add
+    // and no need to leak the webhook URL itself to the browser.
+    fetch('/api/health', { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((h) => setNotionEnabled(h?.config?.notionWebhook === 'configured'))
+      .catch(() => setNotionEnabled(false));
+  }, []);
 
   const busy = phase === 'fetching' || phase === 'analyzing';
 
@@ -449,17 +462,19 @@ export default function Home() {
                       </button>
                     ))}
                     <div className="ml-auto flex gap-2">
-                      <button
-                        onClick={sendToNotion}
-                        disabled={notion.state === 'sending'}
-                        className="rounded-lg bg-neutral-900 px-3 py-1.5 text-sm text-white transition hover:bg-neutral-700 disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-white"
-                      >
-                        {notion.state === 'sending'
-                          ? 'Sending…'
-                          : notion.state === 'sent'
-                            ? 'Sent to Notion ✓'
-                            : 'Send to Notion'}
-                      </button>
+                      {notionEnabled && (
+                        <button
+                          onClick={sendToNotion}
+                          disabled={notion.state === 'sending'}
+                          className="rounded-lg bg-neutral-900 px-3 py-1.5 text-sm text-white transition hover:bg-neutral-700 disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-white"
+                        >
+                          {notion.state === 'sending'
+                            ? 'Sending…'
+                            : notion.state === 'sent'
+                              ? 'Sent to Notion ✓'
+                              : 'Send to Notion'}
+                        </button>
+                      )}
                       <button
                         onClick={copyTranscript}
                         className="rounded-lg border border-neutral-200 px-3 py-1.5 text-sm text-neutral-600 transition hover:bg-neutral-100 dark:border-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-800"
