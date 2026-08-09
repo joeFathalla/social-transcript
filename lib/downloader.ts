@@ -80,8 +80,9 @@ export class DownloadError extends Error {
   }
 }
 
-/** What the user sees instead of an infrastructure error. */
-export const GENERIC_DOWNLOAD_ERROR = "Couldn't download the video.";
+/** The single message shown for any failure to obtain the video. */
+export const GENERIC_DOWNLOAD_ERROR =
+  "Could not get the video. Please try again later.";
 
 export function validateUrl(raw: string): { url: string; platform: string } {
   let value = (raw || "").trim();

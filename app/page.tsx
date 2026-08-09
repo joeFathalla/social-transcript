@@ -20,20 +20,7 @@ type Clip = {
 
 type Phase = 'idle' | 'fetching' | 'ready' | 'analyzing' | 'done';
 type Tab = 'overview' | 'transcript' | 'scenes' | 'onscreen';
-type Err = { message: string; hint?: string; attempts?: number } | null;
-
-/** What the download is doing right now, including retries. */
-type FetchProgress = {
-  /** Already safe to render — the server decides the wording. */
-  message: string;
-  attempt: number;
-  maxAttempts: number;
-  /** True while waiting out the backoff before the next attempt. */
-  waiting: boolean;
-  retryInSeconds?: number;
-  /** Only present when SHOW_DOWNLOAD_ERROR_DETAILS is on. */
-  details?: string;
-} | null;
+type Err = { message: string; hint?: string; details?: string } | null;
 
 /** "01:23" -> 83 */
 function toSeconds(stamp: string): number {
@@ -80,7 +67,10 @@ export default function Home() {
   const [analysis, setAnalysis] = useState<VideoAnalysis | null>(null);
   const [progress, setProgress] = useState({ message: '', pct: 0 });
   const [error, setError] = useState<Err>(null);
-  const [fetchProgress, setFetchProgress] = useState<FetchProgress>(null);
+  // Download progress. yt-dlp's byte counts aren't parsed, so this eases
+  // forward on a timer and only reaches 100% when the file actually lands —
+  // it shows liveness honestly rather than inventing a percentage.
+  const [dlPct, setDlPct] = useState(0);
   const [tab, setTab] = useState<Tab>('overview');
   const [showOriginal, setShowOriginal] = useState(true);
   const [copied, setCopied] = useState(false);
@@ -105,6 +95,19 @@ export default function Home() {
       .catch(() => setNotionEnabled(false));
   }, []);
 
+  // Ease toward 92% while downloading. Retries don't reset it — from the
+  // user's side it's one download that's taking a while, not five attempts.
+  useEffect(() => {
+    if (phase !== 'fetching') return;
+
+    setDlPct((p) => (p === 0 ? 8 : p));
+    const id = setInterval(() => {
+      setDlPct((p) => (p >= 92 ? p : p + Math.max(0.4, (92 - p) * 0.05)));
+    }, 180);
+
+    return () => clearInterval(id);
+  }, [phase]);
+
   const busy = phase === 'fetching' || phase === 'analyzing';
 
   function reset() {
@@ -112,7 +115,7 @@ export default function Home() {
     setAnalysis(null);
     setError(null);
     setProgress({ message: '', pct: 0 });
-    setFetchProgress(null);
+    setDlPct(0);
     setNotion({ state: 'idle' });
     setTab('overview');
   }
@@ -165,23 +168,13 @@ export default function Home() {
       }
 
       for await (const event of ndjson<FetchEvent>(res.body)) {
-        if (event.stage === 'downloading') {
-          setFetchProgress({
-            message: event.message,
-            attempt: event.attempt,
-            maxAttempts: event.maxAttempts,
-            waiting: false,
-          });
-        } else if (event.stage === 'retrying') {
-          setFetchProgress({
-            message: event.message,
-            attempt: event.attempt,
-            maxAttempts: event.maxAttempts,
-            waiting: true,
-            retryInSeconds: event.retryInSeconds,
-            details: event.details,
-          });
-        } else if (event.stage === 'ready') {
+        if (event.stage === 'ready') {
+          // Fill the bar, let it land, then reveal the player. Without the
+          // pause the bar is replaced mid-animation and never visibly
+          // completes — which is the one moment worth showing.
+          setDlPct(100);
+          await new Promise((r) => setTimeout(r, 450));
+
           setClip({
             id: event.id,
             mediaUrl: event.mediaUrl,
@@ -189,24 +182,23 @@ export default function Home() {
             sizeBytes: event.sizeBytes,
             source: event.source,
           });
-          setFetchProgress(null);
           setPhase('ready');
-        } else {
+        } else if (event.stage === 'error') {
           setError({
             message: event.error,
             hint: event.hint,
-            attempts: event.attempts,
+            details: event.details,
           });
-          setFetchProgress(null);
           setPhase('idle');
         }
+        // 'downloading' and 'retrying' need no UI: retries are the app's
+        // problem, not something to make the user watch.
       }
     } catch (err: unknown) {
       setError({
-        message: 'Lost connection while downloading.',
-        hint: err instanceof Error ? err.message : undefined,
+        message: 'Could not get the video. Please try again later.',
+        details: err instanceof Error ? err.message : undefined,
       });
-      setFetchProgress(null);
       setPhase('idle');
     }
   }
@@ -328,9 +320,10 @@ export default function Home() {
             {error.hint && (
               <p className="mt-1 text-sm text-red-600/80 dark:text-red-400/80">{error.hint}</p>
             )}
-            {typeof error.attempts === 'number' && error.attempts > 1 && (
-              <p className="mt-2 text-sm text-red-600/70 dark:text-red-400/70">
-                Gave up after {error.attempts} attempts.
+            {/* Only populated when SHOW_DOWNLOAD_ERROR_DETAILS is on. */}
+            {error.details && (
+              <p className="mt-2 font-mono text-xs text-red-600/60 dark:text-red-400/60">
+                {error.details}
               </p>
             )}
           </div>
@@ -338,45 +331,23 @@ export default function Home() {
 
         {phase === 'fetching' && (
           <div className="mt-6 rounded-xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
-            <div className="flex items-center justify-between gap-4">
-              <p
-                className={`text-neutral-700 dark:text-neutral-300 ${
-                  fetchProgress?.waiting ? '' : 'animate-pulse'
-                }`}
-              >
-                {fetchProgress?.message ?? 'Downloading the video…'}
+            <div className="mb-3 flex items-baseline justify-between gap-4">
+              <p className="text-neutral-700 dark:text-neutral-300">
+                {dlPct >= 100 ? 'Video downloaded' : 'Downloading the video…'}
               </p>
-
-              {fetchProgress?.waiting && (
-                <span className="shrink-0 text-sm text-neutral-500 dark:text-neutral-400">
-                  retrying in {fetchProgress.retryInSeconds}s
-                </span>
-              )}
+              <span className="text-sm tabular-nums text-neutral-500 dark:text-neutral-400">
+                {Math.round(dlPct)}%
+              </span>
             </div>
 
-            {fetchProgress && fetchProgress.maxAttempts > 1 && (
-              <div className="mt-3 flex gap-1.5">
-                {Array.from({ length: fetchProgress.maxAttempts }, (_, i) => (
-                  <span
-                    key={i}
-                    className={`h-1 flex-1 rounded-full transition-colors ${
-                      i + 1 < fetchProgress.attempt
-                        ? 'bg-amber-400'
-                        : i + 1 === fetchProgress.attempt
-                          ? 'bg-blue-600'
-                          : 'bg-neutral-200 dark:bg-neutral-800'
-                    }`}
-                  />
-                ))}
-              </div>
-            )}
-
-            {/* Only ever populated when SHOW_DOWNLOAD_ERROR_DETAILS is on. */}
-            {fetchProgress?.details && (
-              <p className="mt-3 font-mono text-xs text-neutral-400 dark:text-neutral-500">
-                {fetchProgress.details}
-              </p>
-            )}
+            <div className="h-2 w-full overflow-hidden rounded-full bg-neutral-200 dark:bg-neutral-800">
+              <div
+                className={`h-full rounded-full transition-all duration-300 ease-out ${
+                  dlPct >= 100 ? 'bg-green-500' : 'bg-blue-600'
+                }`}
+                style={{ width: `${dlPct}%` }}
+              />
+            </div>
           </div>
         )}
 

@@ -147,28 +147,17 @@ export async function POST(req: NextRequest) {
 
         console.error("[fetch] gave up after", attempts, "attempt(s):", err);
 
-        if (err instanceof DownloadError) {
-          // Errors the user can act on ("that post is private") stay verbatim.
-          // Infrastructure noise ("HTTP Error 503") becomes generic.
-          const show = SHOW_DETAILS || err.userFacing;
-          send({
-            stage: "error",
-            error: show ? err.message : GENERIC_DOWNLOAD_ERROR,
-            hint: show ? err.hint : undefined,
-            attempts,
-            details: SHOW_DETAILS ? err.message : undefined,
-          });
-        } else {
-          send({
-            stage: "error",
-            error: GENERIC_DOWNLOAD_ERROR,
-            attempts,
-            details:
-              SHOW_DETAILS && err instanceof Error
-                ? err.message.slice(0, 300)
-                : undefined,
-          });
-        }
+        // One message for every download failure, whatever the cause. The real
+        // reason — private post, IP block, timeout — is in the server log.
+        send({
+          stage: "error",
+          error: GENERIC_DOWNLOAD_ERROR,
+          attempts,
+          details:
+            SHOW_DETAILS && err instanceof Error
+              ? err.message.slice(0, 300)
+              : undefined,
+        });
       } finally {
         closed = true;
         controller.close();
