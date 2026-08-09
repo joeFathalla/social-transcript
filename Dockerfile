@@ -42,9 +42,14 @@ RUN apt-get update \
  && apt-get autoremove -y \
  && rm -rf /var/lib/apt/lists/* \
  # pip's script directory varies by base image and Python version. Pin a known
- # path so YTDLP_PATH below can't be wrong, and run it once so a bad install
+ # path so YTDLP_PATH below can't be wrong, then run it once so a bad install
  # fails the build here rather than showing up as a degraded service later.
- && ln -sf "$(command -v yt-dlp)" /usr/local/bin/yt-dlp \
+ #
+ # The guard matters: pip usually lands on /usr/local/bin already, and `ln -sf`
+ # errors out when source and destination are the same file.
+ && if [ "$(command -v yt-dlp)" != /usr/local/bin/yt-dlp ]; then \
+      ln -sf "$(command -v yt-dlp)" /usr/local/bin/yt-dlp; \
+    fi \
  && /usr/local/bin/yt-dlp --version
 
 # Hugging Face Spaces requires uid 1000. Harmless everywhere else.
