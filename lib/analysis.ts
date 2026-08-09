@@ -51,6 +51,53 @@ export type SourceInfo = {
   webpageUrl: string;
 };
 
+/** Reported by the downloader before each attempt, and when one fails. */
+export type AttemptInfo =
+  | { phase: "trying"; attempt: number; maxAttempts: number }
+  | {
+      phase: "failed";
+      attempt: number;
+      maxAttempts: number;
+      error: string;
+      hint?: string;
+      /** How long we'll wait before the next attempt. */
+      retryInMs: number;
+    };
+
+/**
+ * NDJSON events streamed by POST /api/fetch.
+ *
+ * `message` is always safe to render. The underlying yt-dlp error is written
+ * to the server log, and only reaches the browser in `details` when
+ * SHOW_DOWNLOAD_ERROR_DETAILS is turned on.
+ */
+export type FetchEvent =
+  | { stage: "downloading"; message: string; attempt: number; maxAttempts: number }
+  | {
+      stage: "retrying";
+      message: string;
+      attempt: number;
+      maxAttempts: number;
+      retryInSeconds: number;
+      details?: string;
+    }
+  | {
+      stage: "ready";
+      id: string;
+      mediaUrl: string;
+      mimeType: string;
+      sizeBytes: number;
+      source: SourceInfo;
+      attempts: number;
+    }
+  | {
+      stage: "error";
+      error: string;
+      hint?: string;
+      attempts: number;
+      details?: string;
+    };
+
 /** Progress events streamed to the browser as NDJSON. */
 export type Stage =
   | "queued"

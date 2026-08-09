@@ -14,12 +14,14 @@ import path from "node:path";
 
 import { NextRequest, NextResponse } from "next/server";
 
+import { checkApiKey } from "@/lib/auth";
 import {
   DownloadError,
   download,
   shrinkIfNeeded,
   validateUrl,
 } from "@/lib/downloader";
+import { toPlainText } from "@/lib/format";
 import { GeminiError, analyzeVideo } from "@/lib/gemini";
 import { clipDir, newClipId, removeClip, sweep } from "@/lib/store";
 
@@ -27,6 +29,14 @@ export const runtime = "nodejs";
 export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
+  const denied = checkApiKey(req);
+  if (denied) {
+    return NextResponse.json(
+      { error: denied, hint: "Send it as X-API-Key or Authorization: Bearer." },
+      { status: 401 }
+    );
+  }
+
   let id: string | null = null;
 
   try {
@@ -38,7 +48,7 @@ export async function POST(req: NextRequest) {
     id = newClipId();
     const dir = clipDir(id);
 
-    const { videoPath, source } = await download(url, platform, dir);
+    const { videoPath, source, attempts } = await download(url, platform, dir);
     const finalPath = await shrinkIfNeeded(videoPath);
 
     const ext = path.extname(finalPath).toLowerCase();
@@ -46,7 +56,14 @@ export async function POST(req: NextRequest) {
 
     const result = await analyzeVideo(finalPath, mimeType);
 
-    return NextResponse.json({ source, result });
+    return NextResponse.json({
+      source,
+      result,
+      // Pre-joined text, so a workflow doesn't need a Code node just to turn
+      // the arrays into something it can put in a Notion block or a message.
+      text: toPlainText(result),
+      downloadAttempts: attempts,
+    });
   } catch (err: unknown) {
     if (err instanceof DownloadError || err instanceof GeminiError) {
       return NextResponse.json(

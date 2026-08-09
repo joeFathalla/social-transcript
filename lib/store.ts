@@ -11,7 +11,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import type { SourceInfo } from "./analysis";
+import type { SourceInfo, VideoAnalysis } from "./analysis";
 
 const ROOT = path.join(os.tmpdir(), "social-transcriber");
 const TTL_MS = Number(process.env.CLIP_TTL_MINUTES || 30) * 60_000;
@@ -61,6 +61,34 @@ export function getMeta(id: string): ClipMeta | null {
 
 export function clipPath(meta: ClipMeta): string {
   return path.join(dirFor(meta.id), meta.filename);
+}
+
+/**
+ * Cache the analysis next to the clip.
+ *
+ * This is what lets /api/send-to-notion work from an id alone: the browser
+ * doesn't have to post the analysis back, so a forged payload can't be pushed
+ * into someone's Notion workspace.
+ */
+export function saveAnalysis(id: string, analysis: VideoAnalysis): void {
+  try {
+    fs.writeFileSync(
+      path.join(dirFor(id), "analysis.json"),
+      JSON.stringify(analysis)
+    );
+  } catch {
+    /* non-fatal — the user still gets their result */
+  }
+}
+
+export function getAnalysis(id: string): VideoAnalysis | null {
+  try {
+    return JSON.parse(
+      fs.readFileSync(path.join(dirFor(id), "analysis.json"), "utf8")
+    ) as VideoAnalysis;
+  } catch {
+    return null;
+  }
 }
 
 export function removeClip(id: string): void {

@@ -9,7 +9,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import type { StreamEvent } from "@/lib/analysis";
 import { GeminiError, analyzeVideo } from "@/lib/gemini";
-import { clipPath, getMeta } from "@/lib/store";
+import { clipPath, getMeta, saveAnalysis } from "@/lib/store";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -58,6 +58,10 @@ export async function POST(req: NextRequest) {
             send({ stage: "analyzing", message, pct });
           }
         );
+
+        // Cached so /api/send-to-notion can forward it without trusting the
+        // browser to send the analysis back.
+        saveAnalysis(meta.id, result);
 
         send({ stage: "done", result, source: meta.source });
       } catch (err: unknown) {

@@ -4,6 +4,12 @@
  * We shell out to the yt-dlp binary directly rather than going through the
  * `yt-dlp-exec` wrapper's typed flag list, because we need flags the wrapper's
  * types do not cover and we want control over timeouts and stderr.
+ *
+ * Downloads fail intermittently — Instagram and TikTok throttle, time out, and
+ * occasionally return empty responses to requests that would succeed a second
+ * later. So `download()` retries. It does NOT retry failures that are settled
+ * facts (deleted post, private account, unsupported URL); five attempts at a
+ * post that doesn't exist is just fifteen wasted seconds.
  */
 
 import { execFile } from "node:child_process";
@@ -12,13 +18,20 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 
-import type { SourceInfo } from "./analysis";
+import type { AttemptInfo, SourceInfo } from "./analysis";
 
 const run = promisify(execFile);
 
 export const MAX_DURATION_S = Number(process.env.MAX_DURATION_S || 600);
 export const MAX_FILESIZE_MB = Number(process.env.MAX_FILESIZE_MB || 200);
 const COMPRESS_ABOVE_MB = Number(process.env.COMPRESS_ABOVE_MB || 45);
+
+/** How many times to try the download in total, first attempt included. */
+export const MAX_ATTEMPTS = Math.max(1, Number(process.env.DOWNLOAD_ATTEMPTS || 5));
+/** Base backoff. Waits go 1s, 2s, 3s, 4s — long enough to matter, short
+ *  enough that five attempts still finish inside ten seconds of waiting. */
+const RETRY_BASE_MS = Number(process.env.RETRY_BASE_MS || 1000);
+const RETRY_MAX_MS = Number(process.env.RETRY_MAX_MS || 4000);
 
 const USER_AGENT =
   process.env.YTDLP_USER_AGENT ||
@@ -39,12 +52,34 @@ const ALLOWED_HOSTS = new Set([
 /** An error whose message is safe (and useful) to show the user. */
 export class DownloadError extends Error {
   hint?: string;
-  constructor(message: string, hint?: string) {
+  /** Whether trying again in a second or two could plausibly succeed. */
+  retryable: boolean;
+  /**
+   * Whether this message is worth showing the user verbatim.
+   *
+   * "That post is private" tells them something they can act on. "HTTP Error
+   * 503" or "unable to extract player response" tells them nothing and reads
+   * like the app is broken — those get replaced with a generic message and
+   * survive only in the server logs.
+   */
+  userFacing: boolean;
+
+  constructor(
+    message: string,
+    hint?: string,
+    retryable = false,
+    userFacing = true
+  ) {
     super(message);
     this.name = "DownloadError";
     this.hint = hint;
+    this.retryable = retryable;
+    this.userFacing = userFacing;
   }
 }
+
+/** What the user sees instead of an infrastructure error. */
+export const GENERIC_DOWNLOAD_ERROR = "Couldn't download the video.";
 
 export function validateUrl(raw: string): { url: string; platform: string } {
   let value = (raw || "").trim();
@@ -99,35 +134,109 @@ function binaryPath(): string {
   return fs.existsSync(/* turbopackIgnore: true */ bundled) ? bundled : "yt-dlp";
 }
 
-function friendlyError(stderr: string, fallback: string): DownloadError {
+/**
+ * Turn yt-dlp's stderr into something a human can act on, and decide whether
+ * trying again is worth the wait.
+ */
+function classify(stderr: string, fallback: string): DownloadError {
   const s = (stderr || fallback).toLowerCase();
 
-  if (s.includes("login required") || s.includes("empty media response")) {
+  // ---- Transport-level, checked FIRST -------------------------------------
+  // Order matters. "HTTP Error 503: Service Unavailable" contains the word
+  // "unavailable", which the deleted-post rule below would otherwise claim —
+  // turning a retryable blip into a permanent failure.
+
+  if (s.includes("enoent") || s.includes("no such file or directory")) {
     return new DownloadError(
-      "Instagram refused to serve that video.",
-      "The post is private, or Instagram is blocking this server's IP. " +
-        "Export a cookies.txt from a logged-in browser and set COOKIES_FILE, " +
-        "or route yt-dlp through a residential proxy with YTDLP_PROXY."
+      "yt-dlp isn't installed on this server.",
+      "Run `npm install` so yt-dlp-exec fetches the binary, or install yt-dlp " +
+        "and point YTDLP_PATH at it.",
+      false,
+      false
     );
   }
-  if (s.includes("ip address is blocked") || s.includes("blocked from accessing")) {
+  if (
+    /http error 5\d\d/.test(s) ||
+    s.includes("service unavailable") ||
+    s.includes("bad gateway") ||
+    s.includes("gateway time-out") ||
+    s.includes("gateway timeout") ||
+    s.includes("internal server error")
+  ) {
     return new DownloadError(
-      "TikTok blocked this server's IP for that post.",
-      "A residential proxy (set YTDLP_PROXY) is usually the fix. Cloud and " +
-        "datacenter IPs get blocked aggressively."
+      "The platform returned a server error.",
+      "Their end, not yours.",
+      true,
+      false
     );
   }
-  if (s.includes("rate-limit") || s.includes("429")) {
+  if (
+    s.includes("timed out") ||
+    s.includes("timeout") ||
+    s.includes("etimedout") ||
+    s.includes("econnreset") ||
+    s.includes("econnrefused") ||
+    s.includes("eai_again") ||
+    s.includes("temporary failure in name resolution") ||
+    s.includes("connection reset") ||
+    s.includes("connection aborted") ||
+    s.includes("incomplete read")
+  ) {
     return new DownloadError(
-      "You're being rate-limited.",
-      "Wait a minute and try again, or use a proxy."
+      "The connection dropped or timed out.",
+      undefined,
+      true,
+      false
     );
   }
+  if (
+    s.includes("rate-limit") ||
+    s.includes("rate limit") ||
+    s.includes("too many requests") ||
+    s.includes("http error 429")
+  ) {
+    return new DownloadError(
+      "Rate-limited by the platform.",
+      "Backing off and trying again.",
+      true,
+      false
+    );
+  }
+
+  // ---- Permanent: the answer will be the same in two seconds ---------------
+
   if (s.includes("private") || s.includes("only available to")) {
-    return new DownloadError("That post is private.");
+    return new DownloadError(
+      "That post is private.",
+      "Private posts can't be downloaded without an account that follows them."
+    );
   }
-  if (s.includes("unavailable") || s.includes("not found") || s.includes(" 404")) {
+  // Deliberately specific. A bare `includes("unavailable")` also swallows
+  // "503 Service Unavailable", and a bare `includes("not found")` swallows
+  // shell "command not found".
+  if (
+    s.includes("video unavailable") ||
+    s.includes("post is unavailable") ||
+    s.includes("content is unavailable") ||
+    s.includes("is not available") ||
+    s.includes("isn't available") ||
+    s.includes("no longer available") ||
+    s.includes("has been removed") ||
+    s.includes("been deleted") ||
+    s.includes("does not exist") ||
+    s.includes("http error 404") ||
+    s.includes("404: not found")
+  ) {
     return new DownloadError("That post doesn't exist or has been deleted.");
+  }
+  if (s.includes("unsupported url")) {
+    return new DownloadError(
+      "yt-dlp doesn't recognise that URL.",
+      "Use the direct link to the post."
+    );
+  }
+  if (s.includes("file is larger than max-filesize")) {
+    return new DownloadError(`That video is larger than ${MAX_FILESIZE_MB} MB.`);
   }
   if (s.includes("age") && s.includes("restrict")) {
     return new DownloadError(
@@ -135,21 +244,47 @@ function friendlyError(stderr: string, fallback: string): DownloadError {
       "Sign-in cookies are required. Set COOKIES_FILE."
     );
   }
-  if (s.includes("file is larger than max-filesize")) {
-    return new DownloadError(`That video is larger than ${MAX_FILESIZE_MB} MB.`);
-  }
-  if (s.includes("enoent")) {
+  // ---- Transient: worth another go ----------------------------------------
+
+  if (s.includes("login required") || s.includes("empty media response")) {
     return new DownloadError(
-      "yt-dlp isn't installed on this server.",
-      "Run `npm install` so yt-dlp-exec fetches the binary, or install yt-dlp " +
-        "and point YTDLP_PATH at it."
+      "Instagram refused to serve that video.",
+      "Usually a rate limit or an IP block. If it keeps happening, set " +
+        "COOKIES_FILE to a cookies.txt from a logged-in account, or route " +
+        "yt-dlp through a residential proxy with YTDLP_PROXY.",
+      true,
+      false
+    );
+  }
+  if (s.includes("ip address is blocked") || s.includes("blocked from accessing")) {
+    return new DownloadError(
+      "TikTok blocked this server's IP for that post.",
+      "Often intermittent. If it persists, a residential proxy (YTDLP_PROXY) " +
+        "is the reliable fix — datacenter IPs get blocked aggressively.",
+      true,
+      false
+    );
+  }
+  if (s.includes("unable to extract") || s.includes("unable to download webpage")) {
+    return new DownloadError(
+      "Couldn't read the post page.",
+      "Often transient. If it persists after a few attempts, yt-dlp may need " +
+        "updating — the platform has probably changed something.",
+      true,
+      false
     );
   }
 
-  const firstLine = (stderr || fallback).split("\n").find((l) => l.includes("ERROR"));
+  // Unknown: assume transient. A retry costs a second; a false "permanent"
+  // costs the user a video they could have had.
+  const firstLine = (stderr || fallback)
+    .split("\n")
+    .find((l) => l.includes("ERROR"));
   return new DownloadError(
     "Couldn't download that video.",
-    (firstLine || fallback).slice(0, 300)
+    (firstLine || fallback).slice(0, 300),
+    true,
+    false
   );
 }
 
@@ -166,13 +301,22 @@ export function cleanup(dir: string | null) {
   }
 }
 
-export async function download(
-  url: string,
-  platform: string,
-  workdir: string
-): Promise<{ videoPath: string; source: SourceInfo }> {
-  const outTemplate = path.join(workdir, "source.%(ext)s");
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** Wipe half-written files so a retry starts from a clean directory. */
+function clearPartials(workdir: string) {
+  try {
+    for (const entry of fs.readdirSync(workdir)) {
+      if (entry.startsWith("source.")) {
+        fs.rmSync(path.join(workdir, entry), { force: true });
+      }
+    }
+  } catch {
+    /* best effort */
+  }
+}
+
+function ytdlpArgs(url: string, platform: string, outTemplate: string): string[] {
   const args = [
     url,
     "-o", outTemplate,
@@ -184,7 +328,9 @@ export async function download(
     "--no-progress",
     "--no-check-certificates",
     "--write-info-json",
-    "--retries", "3",
+    // yt-dlp does its own low-level retries within a single run; ours sit on
+    // top and re-run the whole extraction, which recovers from more.
+    "--retries", "2",
     "--socket-timeout", "30",
     "--max-filesize", `${MAX_FILESIZE_MB}M`,
     "--user-agent", USER_AGENT,
@@ -199,26 +345,54 @@ export async function download(
   }
   if (process.env.YTDLP_PROXY) args.push("--proxy", process.env.YTDLP_PROXY);
 
+  return args;
+}
+
+/** One download attempt. Throws a classified DownloadError on failure. */
+async function attemptDownload(
+  url: string,
+  platform: string,
+  workdir: string
+): Promise<{ videoPath: string; source: SourceInfo }> {
+  const outTemplate = path.join(workdir, "source.%(ext)s");
+
   try {
-    await run(binaryPath(), args, {
+    await run(binaryPath(), ytdlpArgs(url, platform, outTemplate), {
       timeout: 120_000,
       maxBuffer: 16 * 1024 * 1024,
     });
   } catch (err: unknown) {
-    const e = err as { stderr?: string; message?: string };
-    throw friendlyError(e.stderr || "", e.message || "Unknown download failure");
+    const e = err as { stderr?: string; message?: string; killed?: boolean };
+    if (e.killed) {
+      throw new DownloadError(
+        "The download took too long and was stopped.",
+        undefined,
+        true,
+        false
+      );
+    }
+    throw classify(e.stderr || "", e.message || "Unknown download failure");
   }
 
   const entries = fs
     .readdirSync(workdir)
-    .filter((f) => f.startsWith("source.") && !f.endsWith(".info.json"))
+    .filter(
+      (f) =>
+        f.startsWith("source.") &&
+        !f.endsWith(".info.json") &&
+        !f.endsWith(".part")
+    )
     .map((f) => path.join(workdir, f))
     .filter((f) => fs.statSync(f).isFile() && fs.statSync(f).size > 0);
 
   if (entries.length === 0) {
+    // yt-dlp exited 0 but produced nothing. Seen when a platform returns an
+    // empty media response — often transient.
     throw new DownloadError(
-      "Nothing was downloaded.",
-      "The post may be private, deleted, or region-locked."
+      "The download finished but produced no video.",
+      "The post may be private, deleted, or region-locked.",
+      true,
+      false
     );
   }
 
@@ -239,6 +413,7 @@ export async function download(
 
   const duration = Number(info.duration || 0);
   if (duration && duration > MAX_DURATION_S) {
+    // Permanent — the video isn't going to get shorter.
     throw new DownloadError(
       `That video is ${Math.round(duration)}s long; the limit is ${MAX_DURATION_S}s.`,
       "Raise MAX_DURATION_S if you want to allow longer videos."
@@ -256,6 +431,59 @@ export async function download(
       webpageUrl: String(info.webpage_url || url),
     },
   };
+}
+
+/**
+ * Download with retries.
+ *
+ * `onAttempt` is called before every attempt and again when one fails, so the
+ * UI can show which try it's on and why the last one didn't work.
+ */
+export async function download(
+  url: string,
+  platform: string,
+  workdir: string,
+  onAttempt: (info: AttemptInfo) => void = () => {}
+): Promise<{ videoPath: string; source: SourceInfo; attempts: number }> {
+  let lastError: DownloadError | null = null;
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    onAttempt({ phase: "trying", attempt, maxAttempts: MAX_ATTEMPTS });
+
+    try {
+      const result = await attemptDownload(url, platform, workdir);
+      return { ...result, attempts: attempt };
+    } catch (err: unknown) {
+      lastError =
+        err instanceof DownloadError
+          ? err
+          : new DownloadError(
+              "Couldn't download that video.",
+              err instanceof Error ? err.message.slice(0, 300) : undefined,
+              true,
+              false
+            );
+
+      // Settled facts don't improve with repetition.
+      if (!lastError.retryable) break;
+      if (attempt === MAX_ATTEMPTS) break;
+
+      const delay = Math.min(RETRY_BASE_MS * attempt, RETRY_MAX_MS);
+      onAttempt({
+        phase: "failed",
+        attempt,
+        maxAttempts: MAX_ATTEMPTS,
+        error: lastError.message,
+        hint: lastError.hint,
+        retryInMs: delay,
+      });
+
+      clearPartials(workdir);
+      await sleep(delay);
+    }
+  }
+
+  throw lastError ?? new DownloadError("Couldn't download that video.");
 }
 
 /**

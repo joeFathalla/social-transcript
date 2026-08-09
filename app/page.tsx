@@ -2,7 +2,12 @@
 
 import { useRef, useState, type FormEvent } from 'react';
 
-import type { SourceInfo, StreamEvent, VideoAnalysis } from '@/lib/analysis';
+import type {
+  FetchEvent,
+  SourceInfo,
+  StreamEvent,
+  VideoAnalysis,
+} from '@/lib/analysis';
 
 type Clip = {
   id: string;
@@ -14,7 +19,20 @@ type Clip = {
 
 type Phase = 'idle' | 'fetching' | 'ready' | 'analyzing' | 'done';
 type Tab = 'overview' | 'transcript' | 'scenes' | 'onscreen';
-type Err = { message: string; hint?: string } | null;
+type Err = { message: string; hint?: string; attempts?: number } | null;
+
+/** What the download is doing right now, including retries. */
+type FetchProgress = {
+  /** Already safe to render — the server decides the wording. */
+  message: string;
+  attempt: number;
+  maxAttempts: number;
+  /** True while waiting out the backoff before the next attempt. */
+  waiting: boolean;
+  retryInSeconds?: number;
+  /** Only present when SHOW_DOWNLOAD_ERROR_DETAILS is on. */
+  details?: string;
+} | null;
 
 /** "01:23" -> 83 */
 function toSeconds(stamp: string): number {
@@ -25,6 +43,26 @@ function toSeconds(stamp: string): number {
 
 function prettySize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** Yields each JSON object from an NDJSON response body as it arrives. */
+async function* ndjson<T>(body: ReadableStream<Uint8Array>): AsyncGenerator<T> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+    for (const line of lines) {
+      if (line.trim()) yield JSON.parse(line) as T;
+    }
+  }
+  if (buffer.trim()) yield JSON.parse(buffer) as T;
 }
 
 function prettyDuration(seconds: number): string {
@@ -41,9 +79,15 @@ export default function Home() {
   const [analysis, setAnalysis] = useState<VideoAnalysis | null>(null);
   const [progress, setProgress] = useState({ message: '', pct: 0 });
   const [error, setError] = useState<Err>(null);
+  const [fetchProgress, setFetchProgress] = useState<FetchProgress>(null);
   const [tab, setTab] = useState<Tab>('overview');
   const [showOriginal, setShowOriginal] = useState(true);
   const [copied, setCopied] = useState(false);
+  const [notion, setNotion] = useState<{
+    state: 'idle' | 'sending' | 'sent' | 'error';
+    url?: string;
+    message?: string;
+  }>({ state: 'idle' });
 
   const videoRef = useRef<HTMLVideoElement>(null);
 
@@ -54,7 +98,35 @@ export default function Home() {
     setAnalysis(null);
     setError(null);
     setProgress({ message: '', pct: 0 });
+    setFetchProgress(null);
+    setNotion({ state: 'idle' });
     setTab('overview');
+  }
+
+  /** Hand the finished analysis to the n8n workflow that writes to Notion. */
+  async function sendToNotion() {
+    if (!clip) return;
+    setNotion({ state: 'sending' });
+
+    try {
+      const res = await fetch('/api/send-to-notion', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: clip.id }),
+      });
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        setNotion({
+          state: 'error',
+          message: data.hint || data.error || 'Failed to send.',
+        });
+        return;
+      }
+      setNotion({ state: 'sent', url: data.notionUrl });
+    } catch {
+      setNotion({ state: 'error', message: 'Could not reach the server.' });
+    }
   }
 
   /** Step 1 — download the clip so it can be previewed. */
@@ -69,21 +141,58 @@ export default function Home() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url }),
       });
-      const data = await res.json();
 
-      if (!res.ok) {
+      // A bad URL is rejected before the stream starts, as plain JSON.
+      if (!res.ok || !res.body) {
+        const data = await res.json().catch(() => ({}));
         setError({ message: data.error || 'Failed to fetch video', hint: data.hint });
         setPhase('idle');
         return;
       }
 
-      setClip(data as Clip);
-      setPhase('ready');
+      for await (const event of ndjson<FetchEvent>(res.body)) {
+        if (event.stage === 'downloading') {
+          setFetchProgress({
+            message: event.message,
+            attempt: event.attempt,
+            maxAttempts: event.maxAttempts,
+            waiting: false,
+          });
+        } else if (event.stage === 'retrying') {
+          setFetchProgress({
+            message: event.message,
+            attempt: event.attempt,
+            maxAttempts: event.maxAttempts,
+            waiting: true,
+            retryInSeconds: event.retryInSeconds,
+            details: event.details,
+          });
+        } else if (event.stage === 'ready') {
+          setClip({
+            id: event.id,
+            mediaUrl: event.mediaUrl,
+            mimeType: event.mimeType,
+            sizeBytes: event.sizeBytes,
+            source: event.source,
+          });
+          setFetchProgress(null);
+          setPhase('ready');
+        } else {
+          setError({
+            message: event.error,
+            hint: event.hint,
+            attempts: event.attempts,
+          });
+          setFetchProgress(null);
+          setPhase('idle');
+        }
+      }
     } catch (err: unknown) {
       setError({
-        message: 'Could not reach the server.',
+        message: 'Lost connection while downloading.',
         hint: err instanceof Error ? err.message : undefined,
       });
+      setFetchProgress(null);
       setPhase('idle');
     }
   }
@@ -110,33 +219,16 @@ export default function Home() {
         return;
       }
 
-      // NDJSON: one JSON object per line, streamed as the server progresses.
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
-
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          const event = JSON.parse(line) as StreamEvent;
-
-          if (event.stage === 'done') {
-            setAnalysis(event.result);
-            setProgress({ message: 'Done', pct: 100 });
-            setPhase('done');
-          } else if (event.stage === 'error') {
-            setError({ message: event.error, hint: event.hint });
-            setPhase('ready');
-          } else {
-            setProgress({ message: event.message, pct: event.pct });
-          }
+      for await (const event of ndjson<StreamEvent>(res.body)) {
+        if (event.stage === 'done') {
+          setAnalysis(event.result);
+          setProgress({ message: 'Done', pct: 100 });
+          setPhase('done');
+        } else if (event.stage === 'error') {
+          setError({ message: event.error, hint: event.hint });
+          setPhase('ready');
+        } else {
+          setProgress({ message: event.message, pct: event.pct });
         }
       }
     } catch (err: unknown) {
@@ -230,13 +322,56 @@ export default function Home() {
             {error.hint && (
               <p className="mt-1 text-sm text-red-600/80 dark:text-red-400/80">{error.hint}</p>
             )}
+            {typeof error.attempts === 'number' && error.attempts > 1 && (
+              <p className="mt-2 text-sm text-red-600/70 dark:text-red-400/70">
+                Gave up after {error.attempts} attempts.
+              </p>
+            )}
           </div>
         )}
 
         {phase === 'fetching' && (
-          <p className="mt-6 animate-pulse text-neutral-500 dark:text-neutral-400">
-            Downloading the video…
-          </p>
+          <div className="mt-6 rounded-xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900">
+            <div className="flex items-center justify-between gap-4">
+              <p
+                className={`text-neutral-700 dark:text-neutral-300 ${
+                  fetchProgress?.waiting ? '' : 'animate-pulse'
+                }`}
+              >
+                {fetchProgress?.message ?? 'Downloading the video…'}
+              </p>
+
+              {fetchProgress?.waiting && (
+                <span className="shrink-0 text-sm text-neutral-500 dark:text-neutral-400">
+                  retrying in {fetchProgress.retryInSeconds}s
+                </span>
+              )}
+            </div>
+
+            {fetchProgress && fetchProgress.maxAttempts > 1 && (
+              <div className="mt-3 flex gap-1.5">
+                {Array.from({ length: fetchProgress.maxAttempts }, (_, i) => (
+                  <span
+                    key={i}
+                    className={`h-1 flex-1 rounded-full transition-colors ${
+                      i + 1 < fetchProgress.attempt
+                        ? 'bg-amber-400'
+                        : i + 1 === fetchProgress.attempt
+                          ? 'bg-blue-600'
+                          : 'bg-neutral-200 dark:bg-neutral-800'
+                    }`}
+                  />
+                ))}
+              </div>
+            )}
+
+            {/* Only ever populated when SHOW_DOWNLOAD_ERROR_DETAILS is on. */}
+            {fetchProgress?.details && (
+              <p className="mt-3 font-mono text-xs text-neutral-400 dark:text-neutral-500">
+                {fetchProgress.details}
+              </p>
+            )}
+          </div>
         )}
 
         {/* Step 2 — preview and analyse */}
@@ -322,6 +457,17 @@ export default function Home() {
                     ))}
                     <div className="ml-auto flex gap-2">
                       <button
+                        onClick={sendToNotion}
+                        disabled={notion.state === 'sending'}
+                        className="rounded-lg bg-neutral-900 px-3 py-1.5 text-sm text-white transition hover:bg-neutral-700 disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900 dark:hover:bg-white"
+                      >
+                        {notion.state === 'sending'
+                          ? 'Sending…'
+                          : notion.state === 'sent'
+                            ? 'Sent to Notion ✓'
+                            : 'Send to Notion'}
+                      </button>
+                      <button
                         onClick={copyTranscript}
                         className="rounded-lg border border-neutral-200 px-3 py-1.5 text-sm text-neutral-600 transition hover:bg-neutral-100 dark:border-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-800"
                       >
@@ -335,6 +481,25 @@ export default function Home() {
                       </button>
                     </div>
                   </div>
+
+                  {notion.state === 'error' && (
+                    <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950/40 dark:text-red-300">
+                      {notion.message}
+                    </p>
+                  )}
+                  {notion.state === 'sent' && notion.url && (
+                    <p className="text-sm text-neutral-600 dark:text-neutral-400">
+                      Saved —{' '}
+                      <a
+                        href={notion.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-blue-600 underline dark:text-blue-400"
+                      >
+                        open in Notion
+                      </a>
+                    </p>
+                  )}
 
                   {tab === 'overview' && (
                     <div className="space-y-5">
