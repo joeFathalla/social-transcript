@@ -19,15 +19,27 @@ const run = promisify(execFile);
 
 export const runtime = "nodejs";
 
+// The badge in the UI polls this, so the check runs often. Spawning yt-dlp on
+// every poll — from every open tab — is needless work for an answer that
+// changes only on redeploy.
+let cached: { at: number; version: string | null } | null = null;
+const CACHE_MS = 60_000;
+
 async function ytdlpVersion(): Promise<string | null> {
+  if (cached && Date.now() - cached.at < CACHE_MS) return cached.version;
+
+  let version: string | null = null;
   try {
     const { stdout } = await run(process.env.YTDLP_PATH || "yt-dlp", ["--version"], {
       timeout: 10_000,
     });
-    return stdout.trim() || null;
+    version = stdout.trim() || null;
   } catch {
-    return null;
+    version = null;
   }
+
+  cached = { at: Date.now(), version };
+  return version;
 }
 
 export async function GET() {
@@ -48,7 +60,11 @@ export async function GET() {
       status: healthy ? "ok" : "degraded",
       checks: {
         geminiApiKey: checks.geminiKey ? "set" : "MISSING",
-        ytdlp: ytdlp ? `ok (${ytdlp})` : "MISSING",
+        // Say *what was tried*. "MISSING" alone sends people hunting; naming
+        // the path turns it into an obvious fix.
+        ytdlp: ytdlp
+          ? `ok (${ytdlp})`
+          : `MISSING — tried "${process.env.YTDLP_PATH || "yt-dlp"}"`,
       },
       config: {
         model: MODEL,

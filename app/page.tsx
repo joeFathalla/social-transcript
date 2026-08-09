@@ -2,6 +2,7 @@
 
 import { useRef, useState, type FormEvent } from 'react';
 
+import SiteHeader from '@/app/components/SiteHeader';
 import type {
   FetchEvent,
   SourceInfo,
@@ -285,15 +286,7 @@ export default function Home() {
   return (
     <main className="min-h-screen bg-neutral-50 dark:bg-neutral-950 px-4 py-10 sm:px-6">
       <div className="mx-auto w-full max-w-5xl">
-        <header className="mb-8">
-          <h1 className="text-3xl font-semibold tracking-tight text-neutral-900 dark:text-neutral-50">
-            Social Transcriber
-          </h1>
-          <p className="mt-2 text-neutral-500 dark:text-neutral-400">
-            Paste an Instagram Reel or TikTok link. Watch it, then let Gemini
-            read the visuals and the audio.
-          </p>
-        </header>
+        <SiteHeader subtitle="Paste an Instagram Reel or TikTok link. Watch it, then let Gemini read the visuals and the audio." />
 
         {/* Step 1 — the link */}
         <form onSubmit={handleFetch} className="flex flex-col gap-3 sm:flex-row">
