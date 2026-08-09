@@ -13,10 +13,6 @@
 FROM node:22-bookworm-slim AS deps
 WORKDIR /app
 
-# The runtime image installs a current yt-dlp from pip, so there's no reason to
-# let yt-dlp-exec pull its own copy (and hit GitHub's rate limit) during build.
-ENV YOUTUBE_DL_SKIP_DOWNLOAD=true
-
 COPY package.json package-lock.json* ./
 RUN npm ci
 

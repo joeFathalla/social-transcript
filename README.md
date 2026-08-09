@@ -67,16 +67,19 @@ npm run dev
 
 http://localhost:3000
 
-Also install **ffmpeg** so oversized clips get downscaled before upload — it's
-optional, and the app skips compression silently without it.
+You also need **yt-dlp** on your PATH, and want **ffmpeg**:
 
 ```bash
-brew install ffmpeg
+brew install yt-dlp ffmpeg
 ```
 
-`npm install` makes `yt-dlp-exec` fetch the yt-dlp binary into
-`node_modules/yt-dlp-exec/bin`; the app finds it there. Override with
-`YTDLP_PATH`.
+yt-dlp does the downloading and is required. ffmpeg only downscales oversized
+clips before upload — the app skips compression silently without it.
+
+Deliberately not an npm dependency: the popular wrapper needs a `python` binary
+at install time (which breaks `npm ci` in a clean Node image) and pins an older
+yt-dlp than brew gives you. Point `YTDLP_PATH` at a specific copy if you have
+several. The Docker image installs it via pip.
 
 ---
 

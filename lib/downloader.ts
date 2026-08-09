@@ -1,9 +1,11 @@
 /**
  * Pulls a Reel / TikTok down to a local file.
  *
- * We shell out to the yt-dlp binary directly rather than going through the
- * `yt-dlp-exec` wrapper's typed flag list, because we need flags the wrapper's
- * types do not cover and we want control over timeouts and stderr.
+ * We invoke the yt-dlp binary directly rather than depending on an npm wrapper.
+ * The popular wrapper (`yt-dlp-exec`) has a postinstall step that requires a
+ * `python` binary on PATH, which breaks `npm ci` in any clean Node image — and
+ * it pins an older yt-dlp than pip or brew will give you. yt-dlp is the one
+ * dependency worth keeping current, since platform changes break it first.
  *
  * Downloads fail intermittently — Instagram and TikTok throttle, time out, and
  * occasionally return empty responses to requests that would succeed a second
@@ -116,22 +118,13 @@ export function validateUrl(raw: string): { url: string; platform: string } {
 }
 
 /**
- * Where the yt-dlp binary lives. `yt-dlp-exec` downloads it into its own
- * package folder at install time; YTDLP_PATH overrides that (useful in Docker
- * where you may prefer a pip-installed yt-dlp that is easier to keep current).
+ * Where the yt-dlp binary lives.
+ *
+ * The Docker image pip-installs it and points YTDLP_PATH at it. Locally it's
+ * whatever `brew install yt-dlp` put on your PATH.
  */
 function binaryPath(): string {
-  if (process.env.YTDLP_PATH) return process.env.YTDLP_PATH;
-  const bundled = path.join(
-    process.cwd(),
-    "node_modules",
-    "yt-dlp-exec",
-    "bin",
-    process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp"
-  );
-  // turbopackIgnore keeps the bundler from tracing the whole project into the
-  // server output just because these paths are computed at runtime.
-  return fs.existsSync(/* turbopackIgnore: true */ bundled) ? bundled : "yt-dlp";
+  return process.env.YTDLP_PATH || "yt-dlp";
 }
 
 /**
@@ -149,8 +142,8 @@ function classify(stderr: string, fallback: string): DownloadError {
   if (s.includes("enoent") || s.includes("no such file or directory")) {
     return new DownloadError(
       "yt-dlp isn't installed on this server.",
-      "Run `npm install` so yt-dlp-exec fetches the binary, or install yt-dlp " +
-        "and point YTDLP_PATH at it.",
+      "Install it (`brew install yt-dlp` locally; the Docker image does it " +
+        "via pip) or point YTDLP_PATH at an existing copy.",
       false,
       false
     );
