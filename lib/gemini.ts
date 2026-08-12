@@ -14,7 +14,46 @@ import {
   type VideoAnalysis,
 } from "./analysis";
 
-export const MODEL = process.env.GEMINI_MODEL || "gemini-3.5-flash";
+/**
+ * Which surface a request came from.
+ *
+ * The two are kept on separate Gemini keys so that web traffic can't exhaust
+ * the quota the automation depends on, and so a leaked key only burns one of
+ * them. They can also run different models — see MODEL below.
+ */
+export type Surface = "web" | "api";
+
+function pick(...names: string[]): string {
+  for (const n of names) {
+    const v = process.env[n];
+    if (v) return v;
+  }
+  return "";
+}
+
+/** The key for a surface, falling back to the single shared key. */
+export function apiKeyFor(surface: Surface): string {
+  return surface === "api"
+    ? pick("GEMINI_API_KEY_API", "GEMINI_API_KEY", "GOOGLE_API_KEY")
+    : pick("GEMINI_API_KEY_WEB", "GEMINI_API_KEY", "GOOGLE_API_KEY");
+}
+
+/**
+ * The model for a surface.
+ *
+ * This — not the billing tier — is where "better results for the API" actually
+ * comes from. A paid key does not produce better output than a free one; the
+ * same model returns the same quality. Pointing the API surface at a stronger
+ * model does.
+ */
+export function modelFor(surface: Surface): string {
+  return surface === "api"
+    ? pick("GEMINI_MODEL_API", "GEMINI_MODEL") || "gemini-3.5-flash"
+    : pick("GEMINI_MODEL_WEB", "GEMINI_MODEL") || "gemini-3.5-flash";
+}
+
+/** Kept for the health endpoint's summary line. */
+export const MODEL = modelFor("web");
 
 export class GeminiError extends Error {
   hint?: string;
@@ -25,12 +64,13 @@ export class GeminiError extends Error {
   }
 }
 
-export function getClient(): GoogleGenAI {
-  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+export function getClient(surface: Surface = "web"): GoogleGenAI {
+  const apiKey = apiKeyFor(surface);
   if (!apiKey) {
     throw new GeminiError(
-      "GEMINI_API_KEY is not set.",
-      "Add it to .env.local (get a key at https://aistudio.google.com/apikey)."
+      "No Gemini API key is configured for this surface.",
+      "Set GEMINI_API_KEY (or GEMINI_API_KEY_WEB / GEMINI_API_KEY_API). " +
+        "Get a key at https://aistudio.google.com/apikey."
     );
   }
   return new GoogleGenAI({ apiKey });
@@ -41,9 +81,11 @@ type Progress = (message: string) => void;
 export async function analyzeVideo(
   videoPath: string,
   mimeType: string,
-  onProgress: Progress = () => {}
+  onProgress: Progress = () => {},
+  surface: Surface = "web"
 ): Promise<VideoAnalysis> {
-  const ai = getClient();
+  const ai = getClient(surface);
+  const model = modelFor(surface);
   let uploadedName: string | null = null;
 
   try {
@@ -78,7 +120,7 @@ export async function analyzeVideo(
 
     onProgress("Watching and listening to the video");
     const interaction = await ai.interactions.create({
-      model: MODEL,
+      model,
       system_instruction: SYSTEM_INSTRUCTION,
       input: [
         { type: "video", uri: file.uri!, mime_type: file.mimeType! },
@@ -129,12 +171,20 @@ function parseAnalysis(text: string): VideoAnalysis {
   }
 
   const obj = raw as Partial<VideoAnalysis>;
+  const type = obj.content_type;
+
   return {
     title: obj.title || "Untitled",
     language: obj.language || "Unknown",
     has_speech: Boolean(obj.has_speech),
-    summary: obj.summary || "",
-    explanation: obj.explanation || "",
+    content_type:
+      type === "ai_skill" || type === "tech_guide" ? type : "other",
+    brief: obj.brief || "",
+    document: obj.document || "",
+    steps: Array.isArray(obj.steps) ? obj.steps : [],
+    requirements: Array.isArray(obj.requirements) ? obj.requirements : [],
+    key_details: Array.isArray(obj.key_details) ? obj.key_details : [],
+    gaps: Array.isArray(obj.gaps) ? obj.gaps : [],
     transcript: Array.isArray(obj.transcript) ? obj.transcript : [],
     scenes: Array.isArray(obj.scenes) ? obj.scenes : [],
     on_screen_text: Array.isArray(obj.on_screen_text) ? obj.on_screen_text : [],
@@ -163,7 +213,7 @@ function normalize(err: unknown): GeminiError {
   }
   if (low.includes("not found") && low.includes("model")) {
     return new GeminiError(
-      `The model "${MODEL}" isn't available on your key.`,
+      "That Gemini model isn't available on your key.",
       "Set GEMINI_MODEL in .env.local to a model you have access to."
     );
   }

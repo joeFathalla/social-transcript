@@ -13,6 +13,12 @@ export type HealthResponse = {
   };
   config: {
     model: string;
+    modelApi: string;
+    geminiKeys: string;
+    dailyUsage: {
+      web: { used: number; cap: number };
+      api: { used: number; cap: number };
+    };
     apiAuth: string;
     notionWebhook: string;
     downloadAttempts: number;

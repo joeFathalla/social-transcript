@@ -19,7 +19,7 @@ type Clip = {
 };
 
 type Phase = 'idle' | 'fetching' | 'ready' | 'analyzing' | 'done';
-type Tab = 'overview' | 'transcript' | 'scenes' | 'onscreen';
+type Tab = 'guide' | 'transcript' | 'scenes' | 'onscreen';
 type Err = { message: string; hint?: string; details?: string } | null;
 
 /** "01:23" -> 83 */
@@ -71,7 +71,7 @@ export default function Home() {
   // forward on a timer and only reaches 100% when the file actually lands —
   // it shows liveness honestly rather than inventing a percentage.
   const [dlPct, setDlPct] = useState(0);
-  const [tab, setTab] = useState<Tab>('overview');
+  const [tab, setTab] = useState<Tab>('guide');
   const [showOriginal, setShowOriginal] = useState(true);
   const [copied, setCopied] = useState(false);
   const [notion, setNotion] = useState<{
@@ -117,7 +117,7 @@ export default function Home() {
     setProgress({ message: '', pct: 0 });
     setDlPct(0);
     setNotion({ state: 'idle' });
-    setTab('overview');
+    setTab('guide');
   }
 
   /** Hand the finished analysis to the n8n workflow that writes to Notion. */
@@ -253,6 +253,12 @@ export default function Home() {
     void video.play();
   }
 
+  function copyText(): string {
+    if (!analysis) return '';
+    if (tab === 'guide') return analysis.document;
+    return transcriptText();
+  }
+
   function transcriptText(): string {
     if (!analysis) return '';
     return analysis.transcript
@@ -264,7 +270,7 @@ export default function Home() {
   }
 
   async function copyTranscript() {
-    await navigator.clipboard.writeText(transcriptText());
+    await navigator.clipboard.writeText(copyText());
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   }
@@ -281,8 +287,15 @@ export default function Home() {
     URL.revokeObjectURL(link.href);
   }
 
+  const docLabel =
+    analysis?.content_type === 'ai_skill'
+      ? 'AI Skill'
+      : analysis?.content_type === 'tech_guide'
+        ? 'Guide'
+        : 'Notes';
+
   const tabs: { key: Tab; label: string; count?: number }[] = [
-    { key: 'overview', label: 'Overview' },
+    { key: 'guide', label: docLabel, count: analysis?.steps.length },
     { key: 'transcript', label: 'Transcript', count: analysis?.transcript.length },
     { key: 'scenes', label: 'Scenes', count: analysis?.scenes.length },
     { key: 'onscreen', label: 'On screen', count: analysis?.on_screen_text.length },
@@ -291,7 +304,7 @@ export default function Home() {
   return (
     <main className="min-h-screen bg-neutral-50 dark:bg-neutral-950 px-4 py-10 sm:px-6">
       <div className="mx-auto w-full max-w-5xl">
-        <SiteHeader subtitle="Paste an Instagram Reel or TikTok link. Watch it, then let Gemini read the visuals and the audio." />
+        <SiteHeader subtitle="Paste an Instagram, TikTok or Facebook video link. Watch it, then let Gemini read the visuals and the audio." />
 
         {/* Step 1 — the link */}
         <form onSubmit={handleFetch} className="flex flex-col gap-3 sm:flex-row">
@@ -300,7 +313,7 @@ export default function Home() {
             inputMode="url"
             value={url}
             onChange={(e) => setUrl(e.target.value)}
-            placeholder="https://www.tiktok.com/@user/video/…  or  https://www.instagram.com/reel/…"
+            placeholder="TikTok, Instagram Reel or Facebook video link…"
             required
             disabled={busy}
             className="flex-1 rounded-xl border border-neutral-200 bg-white px-4 py-3 text-neutral-900 outline-none transition focus:border-neutral-900 disabled:opacity-50 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-100 dark:focus:border-neutral-400"
@@ -395,7 +408,7 @@ export default function Home() {
               )}
             </aside>
 
-            <section>
+            <section className="min-w-0">
               {!analysis && phase !== 'analyzing' && (
                 <div className="rounded-xl border border-dashed border-neutral-300 p-10 text-center text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
                   Video downloaded. Play it to check it&apos;s the right one, then
@@ -450,7 +463,7 @@ export default function Home() {
                         onClick={copyTranscript}
                         className="rounded-lg border border-neutral-200 px-3 py-1.5 text-sm text-neutral-600 transition hover:bg-neutral-100 dark:border-neutral-800 dark:text-neutral-400 dark:hover:bg-neutral-800"
                       >
-                        {copied ? 'Copied' : 'Copy transcript'}
+                        {copied ? 'Copied' : tab === 'guide' ? 'Copy document' : 'Copy transcript'}
                       </button>
                       <button
                         onClick={downloadJson}
@@ -480,34 +493,109 @@ export default function Home() {
                     </p>
                   )}
 
-                  {tab === 'overview' && (
+                  {tab === 'guide' && (
                     <div className="space-y-5">
-                      <Card title="Summary">
-                        <p>{analysis.summary}</p>
-                      </Card>
-                      <Card title="What happens">
-                        {analysis.explanation.split('\n').filter(Boolean).map((para, i) => (
-                          <p key={i} className={i > 0 ? 'mt-3' : ''}>
-                            {para}
-                          </p>
-                        ))}
-                      </Card>
-                      {analysis.audio_notes && (
-                        <Card title="Audio & music">
-                          <p>{analysis.audio_notes}</p>
+                      {analysis.brief && (
+                        <Card title="Video brief">
+                          <pre className="w-full max-w-full whitespace-pre-wrap break-words font-sans text-neutral-800 dark:text-neutral-200">
+                            {analysis.brief}
+                          </pre>
                         </Card>
                       )}
-                      {analysis.hashtags.length > 0 && (
-                        <div className="flex flex-wrap gap-2">
-                          {analysis.hashtags.map((tag) => (
-                            <span
-                              key={tag}
-                              className="rounded-full bg-neutral-200 px-3 py-1 text-sm text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300"
+
+                      {analysis.requirements.length > 0 && (
+                        <Card title="Requirements">
+                          <ul className="list-disc space-y-1 pl-5">
+                            {analysis.requirements.map((r, i) => (
+                              <li key={i}>{r}</li>
+                            ))}
+                          </ul>
+                        </Card>
+                      )}
+
+                      {analysis.steps.length > 0 && (
+                        <div className="space-y-2">
+                          {analysis.steps.map((st) => (
+                            <div
+                              key={st.number}
+                              className="rounded-xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900"
                             >
-                              #{tag}
-                            </span>
+                              <div className="flex items-baseline gap-3">
+                                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-neutral-900 text-xs font-medium text-white dark:bg-neutral-100 dark:text-neutral-900">
+                                  {st.number}
+                                </span>
+                                <h4 className="font-medium text-neutral-900 dark:text-neutral-100">
+                                  {st.title}
+                                </h4>
+                                <button
+                                  onClick={() => seekTo(st.timestamp)}
+                                  className="ml-auto shrink-0 font-mono text-xs text-blue-600 hover:underline dark:text-blue-400"
+                                >
+                                  {st.timestamp}
+                                </button>
+                              </div>
+
+                              <p className="mt-2 pl-9 text-neutral-700 dark:text-neutral-300">
+                                {st.detail}
+                              </p>
+
+                              {st.commands.map((cmd, i) => (
+                                <pre
+                                  key={i}
+                                  className="mt-2 ml-9 overflow-x-auto rounded-lg bg-neutral-100 p-3 text-sm dark:bg-neutral-800"
+                                >
+                                  <code className="font-mono text-neutral-800 dark:text-neutral-200">
+                                    {cmd}
+                                  </code>
+                                </pre>
+                              ))}
+                            </div>
                           ))}
                         </div>
+                      )}
+
+                      {analysis.key_details.length > 0 && (
+                        <Card title="Key details">
+                          <dl className="space-y-1.5 text-sm">
+                            {analysis.key_details.map((k, i) => (
+                              <div key={i} className="flex gap-3">
+                                <dt className="w-40 shrink-0 text-neutral-500 dark:text-neutral-400">
+                                  {k.label}
+                                </dt>
+                                <dd className="break-all font-mono text-neutral-800 dark:text-neutral-200">
+                                  {k.value}
+                                </dd>
+                              </div>
+                            ))}
+                          </dl>
+                        </Card>
+                      )}
+
+                      {analysis.gaps.length > 0 && (
+                        <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 dark:border-amber-900/60 dark:bg-amber-950/30">
+                          <h3 className="mb-2 text-sm font-medium uppercase tracking-wide text-amber-800 dark:text-amber-300">
+                            Not covered by the video
+                          </h3>
+                          <ul className="list-disc space-y-1 pl-5 text-amber-900 dark:text-amber-200">
+                            {analysis.gaps.map((g, i) => (
+                              <li key={i}>{g}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                      {analysis.document && (
+                        <Card title={docLabel}>
+                          <pre className="w-full max-w-full whitespace-pre-wrap break-all font-sans text-neutral-800 dark:text-neutral-200">
+                            {analysis.document}
+                          </pre>
+                        </Card>
+                      )}
+
+                      {!analysis.document && analysis.steps.length === 0 && (
+                        <Empty>
+                          This video doesn&apos;t contain a procedure.
+                        </Empty>
                       )}
                     </div>
                   )}

@@ -23,6 +23,14 @@ import {
 } from "@/lib/downloader";
 import { toPlainText } from "@/lib/format";
 import { GeminiError, analyzeVideo } from "@/lib/gemini";
+import {
+  API_PER_HOUR,
+  DAILY_CAP_API,
+  clientIp,
+  consumeDailyBudget,
+  rateLimit,
+  refundDailyBudget,
+} from "@/lib/ratelimit";
 import { clipDir, newClipId, removeClip, sweep } from "@/lib/store";
 
 export const runtime = "nodejs";
@@ -34,6 +42,31 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       { error: denied, hint: "Send it as X-API-Key or Authorization: Bearer." },
       { status: 401 }
+    );
+  }
+
+  // Keyed by the caller's key when there is one, so a runaway workflow throttles
+  // itself rather than everyone. Falls back to IP when auth is disabled.
+  const who = req.headers.get("x-api-key") || clientIp(req);
+  const limit = rateLimit(`api:${who}`, API_PER_HOUR);
+  if (!limit.ok) {
+    return NextResponse.json(
+      {
+        error: "Rate limit exceeded.",
+        hint: `Limit is ${API_PER_HOUR} requests per hour.`,
+      },
+      { status: 429, headers: { "Retry-After": String(limit.retryAfterSeconds) } }
+    );
+  }
+
+  const budget = consumeDailyBudget("api");
+  if (!budget.ok) {
+    return NextResponse.json(
+      {
+        error: "Daily quota reached.",
+        hint: `Cap is ${DAILY_CAP_API} videos per day. Resets at midnight UTC.`,
+      },
+      { status: 429 }
     );
   }
 
@@ -54,7 +87,7 @@ export async function POST(req: NextRequest) {
     const ext = path.extname(finalPath).toLowerCase();
     const mimeType = ext === ".webm" ? "video/webm" : "video/mp4";
 
-    const result = await analyzeVideo(finalPath, mimeType);
+    const result = await analyzeVideo(finalPath, mimeType, undefined, "api");
 
     return NextResponse.json({
       source,
@@ -65,6 +98,8 @@ export async function POST(req: NextRequest) {
       downloadAttempts: attempts,
     });
   } catch (err: unknown) {
+    if (err instanceof DownloadError) refundDailyBudget("api");
+
     if (err instanceof DownloadError || err instanceof GeminiError) {
       return NextResponse.json(
         { error: err.message, hint: err.hint },

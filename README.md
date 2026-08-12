@@ -1,11 +1,11 @@
 # Social Transcriber
 
-Paste an Instagram Reel or TikTok link and Gemini watches *and listens* to it —
+Paste an Instagram Reel, TikTok or Facebook video link and Gemini watches *and listens* to it —
 returning a timestamped transcript, a scene-by-scene visual breakdown,
-on-screen text, and an explanation of what actually happens.
+on-screen text, and a practical brief, guide, or reusable AI skill.
 
 The video and its audio go to Gemini together in a single call, so the
-explanation can reference things a transcript alone would miss: a reaction
+analysis can reference things a transcript alone would miss: a reaction
 shot, a visual gag, a caption burned into the frame.
 
 Two ways in: a web UI for humans, and an authenticated JSON API for automation.
@@ -47,7 +47,7 @@ link ──▶ yt-dlp (retries transient failures) ──▶ temp file ──▶
                                                             │
                                                             ▼
                                             structured JSON — transcript,
-                                            scenes, on-screen text, summary
+                                            scenes, on-screen text, brief
 ```
 
 The web UI splits this into two steps on purpose: you confirm the right clip

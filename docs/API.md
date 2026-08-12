@@ -40,7 +40,7 @@ X-API-Key: <the API_KEY from the server's .env.production>
 { "url": "https://www.instagram.com/reel/XXXXXXXXX/" }
 ```
 
-Instagram and TikTok links only.
+Instagram, TikTok and Facebook video links only.
 
 **Set the n8n node's timeout to at least 180000 ms (3 minutes).** The request
 downloads the video, uploads it to Gemini, waits for Gemini to index the
@@ -64,8 +64,7 @@ have succeeded.
     "title": "Short punchy title",
     "language": "Arabic (Egyptian)",
     "has_speech": true,
-    "summary": "One or two sentences.",
-    "explanation": "Two to four paragraphs of what actually happens.",
+    "brief": "**About:** …\n**Tools used:** …\n**You will gain:** …",
     "transcript": [
       {
         "start": "00:00",
@@ -87,7 +86,7 @@ have succeeded.
     "transcriptEnglish": "[00:00] Speaker 1: English…",
     "scenes": "[00:00–00:06] What is on screen.",
     "onScreenText": "[00:02] Text burned into the frame",
-    "full": "# Title\n\nsummary\n\n## What happens\n…"
+    "full": "# Title\n\n**About:** …\n\n## Steps\n…"
   },
   "downloadAttempts": 1
 }
@@ -160,7 +159,7 @@ longer, so it cannot go into a single block or a single property. Two options:
    transcript into ≤1900-character pieces and create one paragraph block per
    chunk.
 2. **Keep long content out of properties entirely.** Put the short fields
-   (title, summary, language, hashtags, source URL) in database properties, and
+   (title, brief, language, hashtags, source URL) in database properties, and
    the transcript and scene breakdown in the page body as blocks.
 
 A workable database schema:
@@ -173,11 +172,11 @@ A workable database schema:
 | Author | Text | `source.uploader` |
 | Language | Select | `analysis.language` |
 | Duration (s) | Number | `source.duration` |
-| Summary | Text | `analysis.summary` (usually under 2000) |
+| Brief | Text | `analysis.brief` (usually under 2000) |
 | Tags | Multi-select | `analysis.hashtags` |
 | Has speech | Checkbox | `analysis.has_speech` |
 
-Then the page body gets `analysis.explanation`, the transcript, and the scene
+Then the page body gets `analysis.brief`, the transcript, and the scene
 breakdown as chunked paragraph blocks.
 
 A Code node that does the chunking:
@@ -199,7 +198,7 @@ return [{
   json: {
     ...$json,
     blocks: [
-      ...chunk(a.explanation),
+      ...chunk(a.brief),
       ...chunk(transcript),
       ...chunk(scenes),
     ],

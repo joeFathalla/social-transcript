@@ -20,6 +20,7 @@ import {
   shrinkIfNeeded,
   validateUrl,
 } from "@/lib/downloader";
+import { WEB_PER_HOUR, clientIp, rateLimit } from "@/lib/ratelimit";
 import { clipDir, newClipId, removeClip, saveMeta, sweep } from "@/lib/store";
 
 export const runtime = "nodejs";
@@ -42,6 +43,19 @@ const MIME_BY_EXT: Record<string, string> = {
 };
 
 export async function POST(req: NextRequest) {
+  // Open to the world, so it needs a ceiling: downloading is the cheap half,
+  // but every download is a step towards a Gemini call.
+  const limit = rateLimit(`web:${clientIp(req)}`, WEB_PER_HOUR);
+  if (!limit.ok) {
+    return NextResponse.json(
+      {
+        error: "Too many requests. Please try again later.",
+        hint: `Limit is ${WEB_PER_HOUR} per hour.`,
+      },
+      { status: 429, headers: { "Retry-After": String(limit.retryAfterSeconds) } }
+    );
+  }
+
   const body = await req.json().catch(() => ({}));
 
   // URL validation fails fast and doesn't need a stream.

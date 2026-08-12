@@ -9,12 +9,44 @@ import { NextRequest, NextResponse } from "next/server";
 
 import type { StreamEvent } from "@/lib/analysis";
 import { GeminiError, analyzeVideo } from "@/lib/gemini";
+import {
+  DAILY_CAP_WEB,
+  WEB_PER_HOUR,
+  clientIp,
+  consumeDailyBudget,
+  rateLimit,
+  refundDailyBudget,
+} from "@/lib/ratelimit";
 import { clipPath, getMeta, saveAnalysis } from "@/lib/store";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
 export async function POST(req: NextRequest) {
+  // This is the endpoint that actually spends money, and it has no API key in
+  // front of it, so both limits apply here.
+  const limit = rateLimit(`web:${clientIp(req)}`, WEB_PER_HOUR);
+  if (!limit.ok) {
+    return NextResponse.json(
+      {
+        error: "Too many requests. Please try again later.",
+        hint: `Limit is ${WEB_PER_HOUR} per hour.`,
+      },
+      { status: 429, headers: { "Retry-After": String(limit.retryAfterSeconds) } }
+    );
+  }
+
+  const budget = consumeDailyBudget("web");
+  if (!budget.ok) {
+    return NextResponse.json(
+      {
+        error: "The daily limit for this site has been reached.",
+        hint: `Cap is ${DAILY_CAP_WEB} videos per day. It resets at midnight UTC.`,
+      },
+      { status: 429 }
+    );
+  }
+
   const body = await req.json().catch(() => ({}));
   const id = String(body?.id ?? "");
 
@@ -26,6 +58,8 @@ export async function POST(req: NextRequest) {
   }
 
   if (!meta) {
+    // Never reached Gemini, so don't charge the day for it.
+    refundDailyBudget("web");
     return NextResponse.json(
       {
         error: "That clip has expired or was never downloaded.",
@@ -56,7 +90,8 @@ export async function POST(req: NextRequest) {
                 ? 65
                 : 30;
             send({ stage: "analyzing", message, pct });
-          }
+          },
+          "web"
         );
 
         // Cached so /api/send-to-notion can forward it without trusting the

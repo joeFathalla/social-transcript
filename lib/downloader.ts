@@ -1,5 +1,5 @@
 /**
- * Pulls a Reel / TikTok down to a local file.
+ * Pulls a Reel / TikTok / Facebook video down to a local file.
  *
  * We invoke the yt-dlp binary directly rather than depending on an npm wrapper.
  * The popular wrapper (`yt-dlp-exec`) has a postinstall step that requires a
@@ -7,7 +7,7 @@
  * it pins an older yt-dlp than pip or brew will give you. yt-dlp is the one
  * dependency worth keeping current, since platform changes break it first.
  *
- * Downloads fail intermittently — Instagram and TikTok throttle, time out, and
+ * Downloads fail intermittently — these platforms throttle, time out, and
  * occasionally return empty responses to requests that would succeed a second
  * later. So `download()` retries. It does NOT retry failures that are settled
  * facts (deleted post, private account, unsupported URL); five attempts at a
@@ -40,16 +40,40 @@ const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
-const ALLOWED_HOSTS = new Set([
-  "instagram.com",
-  "www.instagram.com",
-  "instagr.am",
-  "tiktok.com",
-  "www.tiktok.com",
-  "m.tiktok.com",
-  "vm.tiktok.com",
-  "vt.tiktok.com",
+/**
+ * Hosts we accept, mapped to a display name.
+ *
+ * Kept as an explicit allowlist rather than "anything yt-dlp supports": this
+ * endpoint is public, and yt-dlp speaks to well over a thousand sites — most
+ * of which nobody should be able to pull through your server.
+ */
+const ALLOWED_HOSTS = new Map<string, string>([
+  ["instagram.com", "Instagram"],
+  ["www.instagram.com", "Instagram"],
+  ["instagr.am", "Instagram"],
+
+  ["tiktok.com", "TikTok"],
+  ["www.tiktok.com", "TikTok"],
+  ["m.tiktok.com", "TikTok"],
+  ["vm.tiktok.com", "TikTok"],
+  ["vt.tiktok.com", "TikTok"],
+
+  // Reels, /watch, /<page>/videos/<id>, /share/v/<id>, and fb.watch shortlinks.
+  ["facebook.com", "Facebook"],
+  ["www.facebook.com", "Facebook"],
+  ["m.facebook.com", "Facebook"],
+  ["web.facebook.com", "Facebook"],
+  ["mbasic.facebook.com", "Facebook"],
+  ["fb.watch", "Facebook"],
+  ["www.fb.watch", "Facebook"],
 ]);
+
+/** Where to claim we came from. Wrong referers get requests refused. */
+const REFERER: Record<string, string> = {
+  Instagram: "https://www.instagram.com/",
+  TikTok: "https://www.tiktok.com/",
+  Facebook: "https://www.facebook.com/",
+};
 
 /** An error whose message is safe (and useful) to show the user. */
 export class DownloadError extends Error {
@@ -97,25 +121,31 @@ export function validateUrl(raw: string): { url: string; platform: string } {
   }
 
   const host = parsed.hostname.toLowerCase();
-  if (!ALLOWED_HOSTS.has(host)) {
+  const platform = ALLOWED_HOSTS.get(host);
+  if (!platform) {
     throw new DownloadError(
-      "Only Instagram and TikTok links are supported.",
-      "Paste a Reel link (instagram.com/reel/...) or a TikTok video link."
+      "Only Instagram, TikTok and Facebook links are supported.",
+      "Paste a Reel, a TikTok video, or a Facebook video link."
     );
   }
 
   // Strip tracking junk; keeps the URL stable and avoids odd extractor paths.
   parsed.hash = "";
   for (const key of [...parsed.searchParams.keys()]) {
-    if (key.startsWith("utm_") || key === "igsh" || key === "igshid") {
+    // fbclid rides along on every shared Facebook link and is pure tracking.
+    if (
+      key.startsWith("utm_") ||
+      key === "igsh" ||
+      key === "igshid" ||
+      key === "fbclid" ||
+      key === "mibextid" ||
+      key === "rdid"
+    ) {
       parsed.searchParams.delete(key);
     }
   }
 
-  return {
-    url: parsed.toString(),
-    platform: host.includes("tiktok") ? "TikTok" : "Instagram",
-  };
+  return { url: parsed.toString(), platform };
 }
 
 /**
@@ -240,9 +270,14 @@ function classify(stderr: string, fallback: string): DownloadError {
   }
   // ---- Transient: worth another go ----------------------------------------
 
-  if (s.includes("login required") || s.includes("empty media response")) {
+  if (
+    s.includes("login required") ||
+    s.includes("empty media response") ||
+    s.includes("cannot parse data") ||
+    s.includes("no video formats found")
+  ) {
     return new DownloadError(
-      "Instagram refused to serve that video.",
+      "The platform refused to serve that video.",
       "Usually a rate limit or an IP block. If it keeps happening, set " +
         "COOKIES_FILE to a cookies.txt from a logged-in account, or route " +
         "yt-dlp through a residential proxy with YTDLP_PROXY.",
@@ -252,7 +287,7 @@ function classify(stderr: string, fallback: string): DownloadError {
   }
   if (s.includes("ip address is blocked") || s.includes("blocked from accessing")) {
     return new DownloadError(
-      "TikTok blocked this server's IP for that post.",
+      "The platform blocked this server's IP for that post.",
       "Often intermittent. If it persists, a residential proxy (YTDLP_PROXY) " +
         "is the reliable fix — datacenter IPs get blocked aggressively.",
       true,
@@ -328,9 +363,7 @@ function ytdlpArgs(url: string, platform: string, outTemplate: string): string[]
     "--socket-timeout", "30",
     "--max-filesize", `${MAX_FILESIZE_MB}M`,
     "--user-agent", USER_AGENT,
-    "--referer", platform === "TikTok"
-      ? "https://www.tiktok.com/"
-      : "https://www.instagram.com/",
+    "--referer", REFERER[platform] || "https://www.google.com/",
   ];
 
   const cookies = process.env.COOKIES_FILE || path.join(process.cwd(), "cookies.txt");

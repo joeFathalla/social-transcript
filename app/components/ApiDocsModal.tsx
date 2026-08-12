@@ -70,7 +70,7 @@ X-API-Key: YOUR_KEY`}</Code>
           <Field label="Send">
             <Code>{`{ "url": "https://www.tiktok.com/@user/video/1234567890" }`}</Code>
             <p className="mt-2 text-sm text-neutral-500 dark:text-neutral-400">
-              Instagram Reel or TikTok links only.
+              Instagram, TikTok and Facebook video links only.
             </p>
           </Field>
 
@@ -86,8 +86,7 @@ X-API-Key: YOUR_KEY`}</Code>
     "title": "Short punchy title",
     "language": "Arabic (Egyptian)",
     "has_speech": true,
-    "summary": "One or two sentences.",
-    "explanation": "What actually happens, in a few paragraphs.",
+    "brief": "**About:** …\n**Tools used:** …\n**You will gain:** …",
     "transcript": [
       { "start": "00:00", "end": "00:04", "speaker": "Speaker 1",
         "text": "original language", "text_en": "English" }

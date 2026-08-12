@@ -13,7 +13,8 @@ import { NextResponse } from "next/server";
 
 import { authRequired } from "@/lib/auth";
 import { MAX_ATTEMPTS } from "@/lib/downloader";
-import { MODEL } from "@/lib/gemini";
+import { apiKeyFor, modelFor } from "@/lib/gemini";
+import { budgetStatus } from "@/lib/ratelimit";
 
 const run = promisify(execFile);
 
@@ -45,8 +46,13 @@ async function ytdlpVersion(): Promise<string | null> {
 export async function GET() {
   const ytdlp = await ytdlpVersion();
 
+  const webKey = Boolean(apiKeyFor("web"));
+  const apiKey = Boolean(apiKeyFor("api"));
+
   const checks = {
-    geminiKey: Boolean(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY),
+    // Either surface having a key means the app can do something; both
+    // missing means it can do nothing at all.
+    geminiKey: webKey || apiKey,
     ytdlp: Boolean(ytdlp),
   };
 
@@ -67,7 +73,10 @@ export async function GET() {
           : `MISSING — tried "${process.env.YTDLP_PATH || "yt-dlp"}"`,
       },
       config: {
-        model: MODEL,
+        model: modelFor("web"),
+        modelApi: modelFor("api"),
+        geminiKeys: `web: ${webKey ? "set" : "MISSING"}, api: ${apiKey ? "set" : "MISSING"}`,
+        dailyUsage: budgetStatus(),
         apiAuth: authRequired() ? "enabled" : "OPEN — anyone can call /api/transcribe",
         notionWebhook: process.env.N8N_WEBHOOK_URL ? "configured" : "not configured",
         downloadAttempts: MAX_ATTEMPTS,
