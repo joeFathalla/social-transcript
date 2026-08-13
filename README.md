@@ -1,6 +1,6 @@
 # Social Transcriber
 
-Paste an Instagram Reel, TikTok or Facebook video link and Gemini watches *and listens* to it —
+Paste an Instagram Reel or TikTok video link and Gemini watches *and listens* to it —
 returning a timestamped transcript, a scene-by-scene visual breakdown,
 on-screen text, and a practical brief, guide, or reusable AI skill.
 

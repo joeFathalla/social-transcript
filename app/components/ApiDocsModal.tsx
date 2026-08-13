@@ -70,7 +70,7 @@ X-API-Key: YOUR_KEY`}</Code>
           <Field label="Send">
             <Code>{`{ "url": "https://www.tiktok.com/@user/video/1234567890" }`}</Code>
             <p className="mt-2 text-sm text-neutral-500 dark:text-neutral-400">
-              Instagram, TikTok and Facebook video links only.
+              Instagram and TikTok video links only.
             </p>
           </Field>
 

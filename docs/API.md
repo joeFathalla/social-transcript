@@ -40,7 +40,7 @@ X-API-Key: <the API_KEY from the server's .env.production>
 { "url": "https://www.instagram.com/reel/XXXXXXXXX/" }
 ```
 
-Instagram, TikTok and Facebook video links only.
+Instagram and TikTok video links only.
 
 **Set the n8n node's timeout to at least 180000 ms (3 minutes).** The request
 downloads the video, uploads it to Gemini, waits for Gemini to index the

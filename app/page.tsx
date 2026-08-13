@@ -304,7 +304,7 @@ export default function Home() {
   return (
     <main className="min-h-screen bg-neutral-50 dark:bg-neutral-950 px-4 py-10 sm:px-6">
       <div className="mx-auto w-full max-w-5xl">
-        <SiteHeader subtitle="Paste an Instagram, TikTok or Facebook video link. Watch it, then let Gemini read the visuals and the audio." />
+        <SiteHeader subtitle="Paste an Instagram or TikTok video link. Watch it, then let Gemini read the visuals and the audio." />
 
         {/* Step 1 — the link */}
         <form onSubmit={handleFetch} className="flex flex-col gap-3 sm:flex-row">
@@ -313,7 +313,7 @@ export default function Home() {
             inputMode="url"
             value={url}
             onChange={(e) => setUrl(e.target.value)}
-            placeholder="TikTok, Instagram Reel or Facebook video link…"
+            placeholder="TikTok or Instagram Reel link…"
             required
             disabled={busy}
             className="flex-1 rounded-xl border border-neutral-200 bg-white px-4 py-3 text-neutral-900 outline-none transition focus:border-neutral-900 disabled:opacity-50 dark:border-neutral-800 dark:bg-neutral-900 dark:text-neutral-100 dark:focus:border-neutral-400"

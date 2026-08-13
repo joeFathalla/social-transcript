@@ -1,5 +1,5 @@
 /**
- * Pulls a Reel / TikTok / Facebook video down to a local file.
+ * Pulls a Reel or TikTok video down to a local file.
  *
  * We invoke the yt-dlp binary directly rather than depending on an npm wrapper.
  * The popular wrapper (`yt-dlp-exec`) has a postinstall step that requires a
@@ -58,21 +58,12 @@ const ALLOWED_HOSTS = new Map<string, string>([
   ["vm.tiktok.com", "TikTok"],
   ["vt.tiktok.com", "TikTok"],
 
-  // Reels, /watch, /<page>/videos/<id>, /share/v/<id>, and fb.watch shortlinks.
-  ["facebook.com", "Facebook"],
-  ["www.facebook.com", "Facebook"],
-  ["m.facebook.com", "Facebook"],
-  ["web.facebook.com", "Facebook"],
-  ["mbasic.facebook.com", "Facebook"],
-  ["fb.watch", "Facebook"],
-  ["www.fb.watch", "Facebook"],
 ]);
 
 /** Where to claim we came from. Wrong referers get requests refused. */
 const REFERER: Record<string, string> = {
   Instagram: "https://www.instagram.com/",
   TikTok: "https://www.tiktok.com/",
-  Facebook: "https://www.facebook.com/",
 };
 
 /** An error whose message is safe (and useful) to show the user. */
@@ -124,22 +115,18 @@ export function validateUrl(raw: string): { url: string; platform: string } {
   const platform = ALLOWED_HOSTS.get(host);
   if (!platform) {
     throw new DownloadError(
-      "Only Instagram, TikTok and Facebook links are supported.",
-      "Paste a Reel, a TikTok video, or a Facebook video link."
+      "Only Instagram and TikTok links are supported.",
+      "Paste an Instagram Reel or TikTok video link."
     );
   }
 
   // Strip tracking junk; keeps the URL stable and avoids odd extractor paths.
   parsed.hash = "";
   for (const key of [...parsed.searchParams.keys()]) {
-    // fbclid rides along on every shared Facebook link and is pure tracking.
     if (
       key.startsWith("utm_") ||
       key === "igsh" ||
-      key === "igshid" ||
-      key === "fbclid" ||
-      key === "mibextid" ||
-      key === "rdid"
+      key === "igshid"
     ) {
       parsed.searchParams.delete(key);
     }
