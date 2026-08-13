@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 
+import CopyButton from '@/app/components/CopyButton';
 import SiteHeader from '@/app/components/SiteHeader';
 import type {
   FetchEvent,
@@ -51,6 +52,20 @@ async function* ndjson<T>(body: ReadableStream<Uint8Array>): AsyncGenerator<T> {
     }
   }
   if (buffer.trim()) yield JSON.parse(buffer) as T;
+}
+
+/** Strips markdown syntax so the skill doc reads as plain text. */
+function markdownToText(md: string): string {
+  return md
+    .replace(/```[\s\S]*?```/g, (block) => block.replace(/```[a-z]*\n?/gi, '').replace(/```/g, ''))
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/^>\s?/gm, '')
+    .replace(/^[-*+]\s+/gm, '• ')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .trim();
 }
 
 function prettyDuration(seconds: number): string {
@@ -294,6 +309,34 @@ export default function Home() {
         ? 'Guide'
         : 'Notes';
 
+  const descriptionText = analysis
+    ? [
+        analysis.brief,
+        analysis.requirements.length > 0
+          ? `Requirements:\n${analysis.requirements.map((r) => `• ${r}`).join('\n')}`
+          : '',
+        analysis.key_details.length > 0
+          ? `Key details:\n${analysis.key_details.map((k) => `${k.label}: ${k.value}`).join('\n')}`
+          : '',
+        analysis.gaps.length > 0
+          ? `Not covered by the video:\n${analysis.gaps.map((g) => `• ${g}`).join('\n')}`
+          : '',
+      ]
+        .filter(Boolean)
+        .join('\n\n')
+    : '';
+
+  const stepsText = analysis
+    ? analysis.steps
+        .map((st) => {
+          const cmds = st.commands.length ? `\n${st.commands.join('\n')}` : '';
+          return `${st.number}. [${st.timestamp}] ${st.title}\n${st.detail}${cmds}`;
+        })
+        .join('\n\n')
+    : '';
+
+  const skillText = analysis ? markdownToText(analysis.document) : '';
+
   const tabs: { key: Tab; label: string; count?: number }[] = [
     { key: 'guide', label: docLabel, count: analysis?.steps.length },
     { key: 'transcript', label: 'Transcript', count: analysis?.transcript.length },
@@ -495,99 +538,111 @@ export default function Home() {
 
                   {tab === 'guide' && (
                     <div className="space-y-5">
-                      {analysis.brief && (
-                        <Card title="Video brief">
-                          <pre className="w-full max-w-full whitespace-pre-wrap break-words font-sans text-neutral-800 dark:text-neutral-200">
-                            {analysis.brief}
-                          </pre>
-                        </Card>
-                      )}
+                      {descriptionText && (
+                        <Card title="Description" copyText={descriptionText}>
+                          <div className="space-y-4">
+                            {analysis.brief && (
+                              <pre className="w-full max-w-full whitespace-pre-wrap break-words font-sans text-neutral-800 dark:text-neutral-200">
+                                {analysis.brief}
+                              </pre>
+                            )}
 
-                      {analysis.requirements.length > 0 && (
-                        <Card title="Requirements">
-                          <ul className="list-disc space-y-1 pl-5">
-                            {analysis.requirements.map((r, i) => (
-                              <li key={i}>{r}</li>
-                            ))}
-                          </ul>
+                            {analysis.requirements.length > 0 && (
+                              <div>
+                                <h4 className="mb-1 text-xs font-medium uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+                                  Requirements
+                                </h4>
+                                <ul className="list-disc space-y-1 pl-5">
+                                  {analysis.requirements.map((r, i) => (
+                                    <li key={i}>{r}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+
+                            {analysis.key_details.length > 0 && (
+                              <div>
+                                <h4 className="mb-1 text-xs font-medium uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+                                  Key details
+                                </h4>
+                                <dl className="space-y-1.5 text-sm">
+                                  {analysis.key_details.map((k, i) => (
+                                    <div key={i} className="flex gap-3">
+                                      <dt className="w-40 shrink-0 text-neutral-500 dark:text-neutral-400">
+                                        {k.label}
+                                      </dt>
+                                      <dd className="break-all font-mono text-neutral-800 dark:text-neutral-200">
+                                        {k.value}
+                                      </dd>
+                                    </div>
+                                  ))}
+                                </dl>
+                              </div>
+                            )}
+
+                            {analysis.gaps.length > 0 && (
+                              <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 dark:border-amber-900/60 dark:bg-amber-950/30">
+                                <h4 className="mb-1.5 text-xs font-medium uppercase tracking-wide text-amber-800 dark:text-amber-300">
+                                  Not covered by the video
+                                </h4>
+                                <ul className="list-disc space-y-1 pl-5 text-amber-900 dark:text-amber-200">
+                                  {analysis.gaps.map((g, i) => (
+                                    <li key={i}>{g}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+                          </div>
                         </Card>
                       )}
 
                       {analysis.steps.length > 0 && (
-                        <div className="space-y-2">
-                          {analysis.steps.map((st) => (
-                            <div
-                              key={st.number}
-                              className="rounded-xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900"
-                            >
-                              <div className="flex items-baseline gap-3">
-                                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-neutral-900 text-xs font-medium text-white dark:bg-neutral-100 dark:text-neutral-900">
-                                  {st.number}
-                                </span>
-                                <h4 className="font-medium text-neutral-900 dark:text-neutral-100">
-                                  {st.title}
-                                </h4>
-                                <button
-                                  onClick={() => seekTo(st.timestamp)}
-                                  className="ml-auto shrink-0 font-mono text-xs text-blue-600 hover:underline dark:text-blue-400"
-                                >
-                                  {st.timestamp}
-                                </button>
-                              </div>
+                        <Card title="Steps" copyText={stepsText}>
+                          <div className="space-y-3">
+                            {analysis.steps.map((st) => (
+                              <div
+                                key={st.number}
+                                className="rounded-xl border border-neutral-200 bg-white p-4 dark:border-neutral-800 dark:bg-neutral-900"
+                              >
+                                <div className="flex items-baseline gap-3">
+                                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-neutral-900 text-xs font-medium text-white dark:bg-neutral-100 dark:text-neutral-900">
+                                    {st.number}
+                                  </span>
+                                  <h4 className="font-medium text-neutral-900 dark:text-neutral-100">
+                                    {st.title}
+                                  </h4>
+                                  <button
+                                    onClick={() => seekTo(st.timestamp)}
+                                    className="ml-auto shrink-0 font-mono text-xs text-blue-600 hover:underline dark:text-blue-400"
+                                  >
+                                    {st.timestamp}
+                                  </button>
+                                </div>
 
-                              <p className="mt-2 pl-9 text-neutral-700 dark:text-neutral-300">
-                                {st.detail}
-                              </p>
+                                <p className="mt-2 pl-9 text-neutral-700 dark:text-neutral-300">
+                                  {st.detail}
+                                </p>
 
-                              {st.commands.map((cmd, i) => (
-                                <pre
-                                  key={i}
-                                  className="mt-2 ml-9 overflow-x-auto rounded-lg bg-neutral-100 p-3 text-sm dark:bg-neutral-800"
-                                >
-                                  <code className="font-mono text-neutral-800 dark:text-neutral-200">
-                                    {cmd}
-                                  </code>
-                                </pre>
-                              ))}
-                            </div>
-                          ))}
-                        </div>
-                      )}
-
-                      {analysis.key_details.length > 0 && (
-                        <Card title="Key details">
-                          <dl className="space-y-1.5 text-sm">
-                            {analysis.key_details.map((k, i) => (
-                              <div key={i} className="flex gap-3">
-                                <dt className="w-40 shrink-0 text-neutral-500 dark:text-neutral-400">
-                                  {k.label}
-                                </dt>
-                                <dd className="break-all font-mono text-neutral-800 dark:text-neutral-200">
-                                  {k.value}
-                                </dd>
+                                {st.commands.map((cmd, i) => (
+                                  <pre
+                                    key={i}
+                                    className="mt-2 ml-9 overflow-x-auto rounded-lg bg-neutral-100 p-3 text-sm dark:bg-neutral-800"
+                                  >
+                                    <code className="font-mono text-neutral-800 dark:text-neutral-200">
+                                      {cmd}
+                                    </code>
+                                  </pre>
+                                ))}
                               </div>
                             ))}
-                          </dl>
+                          </div>
                         </Card>
                       )}
 
-                      {analysis.gaps.length > 0 && (
-                        <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 dark:border-amber-900/60 dark:bg-amber-950/30">
-                          <h3 className="mb-2 text-sm font-medium uppercase tracking-wide text-amber-800 dark:text-amber-300">
-                            Not covered by the video
-                          </h3>
-                          <ul className="list-disc space-y-1 pl-5 text-amber-900 dark:text-amber-200">
-                            {analysis.gaps.map((g, i) => (
-                              <li key={i}>{g}</li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-
                       {analysis.document && (
-                        <Card title={docLabel}>
-                          <pre className="w-full max-w-full whitespace-pre-wrap break-all font-sans text-neutral-800 dark:text-neutral-200">
-                            {analysis.document}
+                        <Card title={docLabel} copyText={skillText}>
+                          <pre className="w-full max-w-full whitespace-pre-wrap break-words font-sans text-neutral-800 dark:text-neutral-200">
+                            {skillText}
                           </pre>
                         </Card>
                       )}
@@ -710,12 +765,23 @@ function Row({ label, value }: { label: string; value: string }) {
   );
 }
 
-function Card({ title, children }: { title: string; children: React.ReactNode }) {
+function Card({
+  title,
+  copyText,
+  children,
+}: {
+  title: string;
+  copyText?: string;
+  children: React.ReactNode;
+}) {
   return (
     <div className="rounded-xl border border-neutral-200 bg-white p-5 dark:border-neutral-800 dark:bg-neutral-900">
-      <h3 className="mb-2 text-sm font-medium uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
-        {title}
-      </h3>
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <h3 className="text-sm font-medium uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+          {title}
+        </h3>
+        {copyText && <CopyButton text={copyText} />}
+      </div>
       <div className="leading-relaxed text-neutral-800 dark:text-neutral-200">{children}</div>
     </div>
   );
